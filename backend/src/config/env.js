@@ -35,4 +35,11 @@ module.exports = {
   },
   // optional ICE servers (comma-separated JSON entries) e.g. [{"urls":"stun:stun.l.google.com:19302"}]
   iceServers: process.env.ICE_SERVERS || '',
+  // Metered.ca TURN service — preferred over the static ICE_SERVERS above
+  // when both are set, since it issues short-lived rotating credentials
+  // fetched server-side instead of a fixed username/password baked into env.
+  metered: {
+    domain: process.env.METERED_DOMAIN || '',
+    apiKey: process.env.METERED_API_KEY || '',
+  },
 };

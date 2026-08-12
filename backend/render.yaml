@@ -46,3 +46,12 @@ services:
 
       - key: EMAIL_FROM
         value: "MindMitra <onboarding@resend.dev>"
+
+      - key: METERED_DOMAIN
+        sync: false
+
+      - key: METERED_API_KEY
+        sync: false
+
+      - key: ICE_SERVERS
+        sync: false

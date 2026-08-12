@@ -14,6 +14,20 @@ const SessionPage = () => {
   const remoteVideoRef = useRef(null);
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
+  // In-flight getUserMedia / PC creation promises. Making these single-flight
+  // means the mount effect and the offer/answer handlers await the SAME
+  // stream/connection instead of racing: two concurrent getUserMedia calls
+  // make the browser abort one (AbortError) and, when the aborted one is
+  // inside handleOffer, the student silently never sends its answer.
+  const localStreamPromiseRef = useRef(null);
+  const pcPromiseRef = useRef(null);
+  // Bumped whenever the peer connection is torn down so an in-flight
+  // ensurePeerConnection() knows its freshly created PC was superseded
+  // (e.g. peer-left fires while the camera is still being acquired).
+  const pcGenerationRef = useRef(0);
+  // Guards getUserMedia that resolves after unmount (React StrictMode
+  // double-mount) so it stops its tracks instead of leaving the camera on.
+  const unmountedRef = useRef(false);
   const pendingIceRef = useRef([]);
   // ICE servers (including any TURN config) sent by the backend on
   // session:joined. Kept in a ref (not state) since it's only read inside
@@ -66,40 +80,61 @@ const SessionPage = () => {
 
     const handleOffer = async ({ fromUserId, offer }) => {
       console.log('[SessionPage] Offer received', { fromUserId });
-      await ensurePeerConnection();
+      try {
+        const pc = await ensurePeerConnection();
+        if (!pc) return;
 
-      const pc = pcRef.current;
-      if (!pc) return;
+        // Glare guard: the backend re-fires session:ready after a reconnect,
+        // which can produce a second offer while we're still negotiating the
+        // first. setRemoteDescription throws unless the state is 'stable',
+        // and with no error handling that used to silently kill the answer.
+        if (pc.signalingState !== 'stable') {
+          console.warn('[SessionPage] Ignoring offer: signalingState is', pc.signalingState);
+          return;
+        }
 
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
-      await flushPendingIce();
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      socket.emit('webrtc:answer', { targetUserId: fromUserId, answer });
-      console.log('[SessionPage] Answer sent', { targetUserId: fromUserId });
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        await flushPendingIce();
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit('webrtc:answer', { targetUserId: fromUserId, answer });
+        console.log('[SessionPage] Answer sent', { targetUserId: fromUserId });
+      } catch (err) {
+        console.error('[SessionPage] Failed to answer offer', err);
+      }
     };
 
     const handleAnswer = async ({ answer }) => {
       console.log('[SessionPage] Answer received');
       const pc = pcRef.current;
       if (!pc) return;
-      await pc.setRemoteDescription(new RTCSessionDescription(answer));
-      flushPendingIce();
+      if (pc.signalingState !== 'have-local-offer') {
+        console.warn('[SessionPage] Ignoring answer: signalingState is', pc.signalingState);
+        return;
+      }
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        flushPendingIce();
+      } catch (err) {
+        console.error('[SessionPage] Failed to apply answer', err);
+      }
     };
 
     const handleIce = async ({ candidate }) => {
       console.log('[SessionPage] ICE candidate received', candidate?.candidate);
       const pc = pcRef.current;
-      if (!pc) return;
-      if (pc.remoteDescription && pc.remoteDescription.type) {
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (err) {
-          console.error('[SessionPage] addIceCandidate failed', err);
-        }
-      } else {
+      // Queue candidates that arrive before the peer connection (or its
+      // remote description) exists — previously these were dropped entirely,
+      // losing the counselor's early candidates on the student side.
+      if (!pc || !pc.remoteDescription || !pc.remoteDescription.type) {
         pendingIceRef.current.push(candidate);
-        console.log('[SessionPage] Queued ICE candidate until remote description is set');
+        console.log('[SessionPage] Queued ICE candidate until peer connection is ready');
+        return;
+      }
+      try {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        console.error('[SessionPage] addIceCandidate failed', err);
       }
     };
 
@@ -117,7 +152,11 @@ const SessionPage = () => {
     socket.on('webrtc:ice', handleIce);
 
     socket.emit('session:join', { sessionId });
-    ensurePeerConnection().catch((err) => console.error('[SessionPage] Failed to initialize peer connection', err));
+    // Request the camera for the local preview here, but defer creating the
+    // RTCPeerConnection until an offer/answer exchange actually starts — the
+    // backend's ICE/TURN servers only arrive in session:joined, and creating
+    // the connection with the default STUN list ignores them entirely.
+    getLocalStream().catch((err) => console.error('[SessionPage] Failed to get local media', err));
 
     return () => {
       socket.off('connect', handleSocketConnect);
@@ -148,7 +187,9 @@ const SessionPage = () => {
   // Previously this cleanup only ran inside handleEnd, so any other exit
   // path left the camera light on and the RTCPeerConnection open.
   useEffect(() => {
+    unmountedRef.current = false;
     return () => {
+      unmountedRef.current = true;
       stopTracksAndClosePeer();
     };
   }, []);
@@ -173,61 +214,112 @@ const SessionPage = () => {
     }
   };
 
-  const ensurePeerConnection = async () => {
-    if (pcRef.current) return pcRef.current;
+  // Single-flight getUserMedia: returns the cached stream if we already have
+  // one, or the in-flight promise if a request is still pending. Without this
+  // the mount effect and the offer handler each call getUserMedia concurrently,
+  // the browser aborts one call, and the aborted handler never answers.
+  const getLocalStream = async () => {
+    if (localStreamRef.current) return localStreamRef.current;
+    if (localStreamPromiseRef.current) return localStreamPromiseRef.current;
 
-    // Reuse the existing camera/mic stream if we already have one (e.g.
-    // rebuilding the peer connection after the other participant
-    // reconnected) instead of prompting for camera permission again.
-    let stream = localStreamRef.current;
-    if (!stream) {
-      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    localStreamPromiseRef.current = (async () => {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      if (unmountedRef.current) {
+        // Simulated unmount (StrictMode) or real unmount raced the prompt —
+        // don't keep the camera on for a dead page.
+        stream.getTracks().forEach((track) => track.stop());
+        throw new Error('Session page unmounted while requesting camera');
+      }
       localStreamRef.current = stream;
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
-    }
+      return stream;
+    })().finally(() => {
+      localStreamPromiseRef.current = null;
+    });
 
-    const pc = new RTCPeerConnection({ iceServers: iceServersRef.current });
-    pcRef.current = pc;
+    return localStreamPromiseRef.current;
+  };
 
-    stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+  // Single-flight RTCPeerConnection creation. The connection is only built
+  // when an offer/answer exchange actually starts, by which point the
+  // backend's ICE/TURN servers from session:joined are in iceServersRef — so
+  // it never silently falls back to the bare STUN default.
+  const ensurePeerConnection = async () => {
+    if (pcRef.current) return pcRef.current;
+    if (pcPromiseRef.current) return pcPromiseRef.current;
 
-    pc.ontrack = (evt) => {
-      console.log('[SessionPage] Remote stream attached');
-      if (remoteVideoRef.current) remoteVideoRef.current.srcObject = evt.streams[0];
-    };
+    pcPromiseRef.current = (async () => {
+      const generation = pcGenerationRef.current;
+      const stream = await getLocalStream();
+      const pc = new RTCPeerConnection({ iceServers: iceServersRef.current });
 
-    pc.onicecandidate = (evt) => {
-      if (evt.candidate && appointment) {
-        const other = getOtherUserId();
-        if (other) {
-          console.log('[SessionPage] Sending ICE candidate');
-          socket.emit('webrtc:ice', { targetUserId: other, candidate: evt.candidate });
-        }
+      // The connection was torn down (peer-left / unmount) while we were
+      // acquiring the camera — the just-created PC is stale, close it.
+      if (generation !== pcGenerationRef.current) {
+        pc.close();
+        throw new Error('Peer connection superseded');
       }
-    };
+      pcRef.current = pc;
 
-    return pc;
+      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+
+      pc.ontrack = (evt) => {
+        console.log('[SessionPage] Remote stream attached');
+        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = evt.streams[0];
+      };
+
+      pc.onicecandidate = (evt) => {
+        if (evt.candidate && appointment) {
+          const other = getOtherUserId();
+          if (other) {
+            console.log('[SessionPage] Sending ICE candidate');
+            socket.emit('webrtc:ice', { targetUserId: other, candidate: evt.candidate });
+          }
+        }
+      };
+
+      return pc;
+    })().finally(() => {
+      pcPromiseRef.current = null;
+    });
+
+    return pcPromiseRef.current;
   };
 
   const createOfferAndSend = async () => {
     if (!appointment || !socket) return;
-    const pc = await ensurePeerConnection();
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
+    try {
+      const pc = await ensurePeerConnection();
+      if (!pc) return;
 
-    const other = getOtherUserId();
-    if (!other) return;
+      // Skip re-sending an offer if one is already outstanding (session:ready
+      // re-fires after reconnects) — createOffer() throws when the state is
+      // not 'stable', and throwing here left the call permanently stuck.
+      if (pc.signalingState !== 'stable') {
+        console.warn('[SessionPage] Skipping offer: signalingState is', pc.signalingState);
+        return;
+      }
 
-    console.log('[SessionPage] Creating offer and sending to', other);
-    socket.emit('webrtc:offer', { targetUserId: other, offer });
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      const other = getOtherUserId();
+      if (!other) return;
+
+      console.log('[SessionPage] Creating offer and sending to', other);
+      socket.emit('webrtc:offer', { targetUserId: other, offer });
+    } catch (err) {
+      console.error('[SessionPage] Failed to create offer', err);
+    }
   };
 
   // Closes just the RTCPeerConnection — used when the remote peer drops so
   // we can rebuild the connection on their rejoin without losing our own
   // camera feed or re-prompting for permission.
   const closePeerConnectionOnly = () => {
+    pcGenerationRef.current += 1;
     if (pcRef.current) {
       pcRef.current.close();
       pcRef.current = null;
