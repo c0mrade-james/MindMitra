@@ -54,4 +54,8 @@ services:
         sync: false
 
       - key: ICE_SERVERS
+<<<<<<< HEAD
         sync: false
+=======
+        sync: false
+>>>>>>> e2d09fe0a7927bdc3f376efde05afdcefc8988ba
