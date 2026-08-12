@@ -20,7 +20,7 @@ CORE OPERATIONAL RULES:
    - Trigger Keywords/Topics: Persistent hopelessness, severe anxiety, academic burnout, emotional breakdown, trauma, grief, or inability to cope.
    - Action: Include a clean call-to-action button linking directly to the booking page. Use this exact markdown format on its own line:
 
-     **[Click Here to Book Appointment](http://localhost:5173/dashboard/student/appointments)**
+     **[Click Here to Book Appointment](https://mindmitra-lake.vercel.app/dashboard/student/appointments)**
 
 4. EMERGENCY & SELF-HARM PROTOCOL:
    - Trigger Keywords/Topics: Suicidal ideation, explicit intent, self-harm, or active crisis.
@@ -30,7 +30,7 @@ CORE OPERATIONAL RULES:
      • Inform them: "Our platform's emergency support protocol has been notified."
      • End with the appointment booking link:
 
-       **[Click Here to Book Appointment](http://localhost:5173/dashboard/student/appointments)**`;
+       **[Click Here to Book Appointment](https://mindmitra-lake.vercel.app/dashboard/student/appointments)**`;
 
 let genAI = null;
 let model = null;

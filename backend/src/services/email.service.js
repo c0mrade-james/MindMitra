@@ -2,10 +2,13 @@ const { Resend } = require("resend");
 const env = require("../config/env");
 const logger = require("../utils/logger");
 
-const resend = new Resend(env.email.apiKey);
+let resend = null;
+if (env.email.apiKey) {
+  resend = new Resend(env.email.apiKey);
+}
 
 const sendEmail = async ({ to, subject, html }) => {
-  if (!env.email.apiKey) {
+  if (!env.email.apiKey || !resend) {
     logger.warn("RESEND_API_KEY is missing.");
     return { sent: false, reason: "RESEND_NOT_CONFIGURED" };
   }
