@@ -59,6 +59,24 @@ function postJson(url, body, headers = {}, timeoutMs = 8000) {
   });
 }
 
+// Test endpoint — open in browser to check Cloudflare token
+router.get('/test', async (_req, res) => {
+  const { accountId, apiToken } = env.cloudflare;
+  if (!accountId || !apiToken) {
+    return res.json({ ok: false, error: 'CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_API_TOKEN not set on Render' });
+  }
+  try {
+    const response = await postJson(
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/calls/turn/credentials`,
+      { ttl: 86400 },
+      { Authorization: `Bearer ${apiToken}` }
+    );
+    return res.json({ ok: true, accountId: accountId.substring(0, 8) + '...', response });
+  } catch (err) {
+    return res.json({ ok: false, error: err.message });
+  }
+});
+
 router.get('/', async (_req, res) => {
   try {
     if (cachedIceServers && Date.now() - cacheTimestamp < CACHE_TTL) {
