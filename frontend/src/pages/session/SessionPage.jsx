@@ -13,7 +13,11 @@ const SessionPage = () => {
   const remoteVideoRef = useRef(null);
   const pcRef = useRef(null);
   const pendingIceRef = useRef([]);
-  const iceServersRef = useRef([{ urls: 'stun:stun.l.google.com:19302' }]);
+  const iceServersRef = useRef([
+    { urls: 'stun:stun.cloudflare.com:3478' },
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+  ]);
   const peerLeftTimerRef = useRef(null);
   const [appointment, setAppointment] = useState(null);
   const [sessionJoined, setSessionJoined] = useState(false);
@@ -35,16 +39,20 @@ const SessionPage = () => {
   }, [sessionId]);
 
   // Fetch TURN credentials from backend (Cloudflare Realtime)
+  const iceServersLoadedRef = useRef(false);
   useEffect(() => {
     axiosInstance.get('/ice-servers')
       .then((res) => {
         if (res.data?.data?.length > 0) {
           iceServersRef.current = res.data.data;
+          iceServersLoadedRef.current = true;
           console.log('[SessionPage] Loaded', res.data.data.length, 'ICE servers from backend');
+          console.log('[SessionPage] ICE servers:', JSON.stringify(res.data.data.map(s => s.urls)));
         }
       })
       .catch((err) => {
         console.warn('[SessionPage] Failed to fetch ICE servers, using STUN fallback', err);
+        iceServersLoadedRef.current = true;
       });
   }, []);
 
@@ -87,12 +95,33 @@ const SessionPage = () => {
   const ensurePeerConnection = useCallback(async () => {
     if (pcRef.current) return pcRef.current;
 
+    // Wait up to 3s for ICE servers to load from backend
+    let attempts = 0;
+    while (!iceServersLoadedRef.current && attempts < 30) {
+      await new Promise((r) => setTimeout(r, 100));
+      attempts++;
+    }
+
     const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
     if (localVideoRef.current) {
       localVideoRef.current.srcObject = stream;
     }
 
-    const pc = new RTCPeerConnection({ iceServers: iceServersRef.current });
+    // Enforce plural "urls" format and filter out malformed entries
+    const servers = iceServersRef.current.map((s) => ({
+      urls: s.urls || s.url,
+      ...(s.username && { username: s.username }),
+      ...(s.credential && { credential: s.credential }),
+    }));
+
+    console.log('[SessionPage] ICE servers count:', servers.length);
+    servers.forEach((s, i) => console.log(`  [${i}]`, s.urls, s.username ? '(TURN)' : '(STUN)'));
+
+    const pc = new RTCPeerConnection({
+      iceServers: servers,
+      iceTransportPolicy: 'all',
+      iceCandidatePoolSize: 10,
+    });
     pcRef.current = pc;
 
     stream.getTracks().forEach((track) => pc.addTrack(track, stream));

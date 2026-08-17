@@ -10,36 +10,45 @@ let cachedIceServers = null;
 let cacheTimestamp = 0;
 const CACHE_TTL = 20 * 60 * 1000; // refresh every 20 minutes
 
-// Cloudflare's free public STUN servers
-const CF_STUN = [
+// Public STUN servers as always-available fallback
+const STUN_FALLBACK = [
   { urls: 'stun:stun.cloudflare.com:3478' },
   { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
 ];
 
-function fetchJson(url, options = {}, timeoutMs = 8000) {
+function postJson(url, body, headers = {}, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
-    const req = https.get(
+    const bodyStr = JSON.stringify(body);
+    const req = https.request(
       {
         hostname: urlObj.hostname,
         path: urlObj.pathname + urlObj.search,
-        headers: options.headers || {},
+        method: 'POST',
+        headers: {
+          ...headers,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(bodyStr),
+        },
         timeout: timeoutMs,
       },
       (res) => {
-        let body = '';
-        res.on('data', (chunk) => { body += chunk; });
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
         res.on('end', () => {
           try {
-            resolve(JSON.parse(body));
+            resolve(JSON.parse(data));
           } catch (e) {
-            reject(new Error(`JSON parse error: ${body.substring(0, 200)}`));
+            reject(new Error(`JSON parse error (status ${res.statusCode}): ${data.substring(0, 500)}`));
           }
         });
       }
     );
     req.on('error', reject);
     req.on('timeout', () => { req.destroy(); reject(new Error('Request timeout')); });
+    req.write(bodyStr);
+    req.end();
   });
 }
 
@@ -48,48 +57,49 @@ router.get('/', async (_req, res) => {
   try {
     // Return cached credentials if still valid
     if (cachedIceServers && Date.now() - cacheTimestamp < CACHE_TTL) {
+      logger.info('Returning cached ICE servers');
       return res.json({ success: true, data: cachedIceServers });
     }
 
     const { accountId, apiToken } = env.cloudflare;
 
     if (!accountId || !apiToken) {
-      logger.warn('Cloudflare credentials not configured, using STUN only');
-      return res.json({ success: true, data: CF_STUN });
+      logger.warn('Cloudflare credentials not configured (CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN)');
+      return res.json({ success: true, data: STUN_FALLBACK });
     }
 
-    // Fetch temporary TURN credentials from Cloudflare Realtime API
-    const response = await fetchJson(
+    logger.info(`Fetching Cloudflare TURN credentials for account: ${accountId.substring(0, 8)}...`);
+
+    // Cloudflare Realtime TURN API — POST with TTL
+    const response = await postJson(
       `https://api.cloudflare.com/client/v4/accounts/${accountId}/realtime/turn/credentials`,
-      {
-        headers: {
-          Authorization: `Bearer ${apiToken}`,
-          'Content-Type': 'application/json',
-        },
-      }
+      { ttl: 86400 },
+      { Authorization: `Bearer ${apiToken}` }
     );
 
+    logger.info('Cloudflare API response:', JSON.stringify(response).substring(0, 300));
+
     if (!response.success) {
-      const errMsg = response.errors?.[0]?.message || 'Cloudflare API error';
+      const errMsg = response.errors?.[0]?.message || JSON.stringify(response.errors);
       logger.error('Cloudflare TURN API error:', errMsg);
-      // Fallback to STUN only
-      return res.json({ success: true, data: CF_STUN });
+      return res.json({ success: true, data: STUN_FALLBACK });
     }
 
-    // Cloudflare returns { iceServers: [...] } — combine with our STUN servers
+    // Cloudflare returns { iceServers: [...] }
     const turnServers = response.result?.iceServers || [];
-    const iceServers = [...CF_STUN, ...turnServers];
+    logger.info(`Cloudflare returned ${turnServers.length} TURN servers:`, JSON.stringify(turnServers).substring(0, 500));
+
+    // Combine STUN + TURN — STUN first for fast local connections
+    const iceServers = [...STUN_FALLBACK, ...turnServers];
 
     // Cache the result
     cachedIceServers = iceServers;
     cacheTimestamp = Date.now();
 
-    logger.info(`Fetched ${turnServers.length} Cloudflare TURN servers`);
     return res.json({ success: true, data: iceServers });
   } catch (err) {
     logger.error('Failed to fetch ICE servers:', err.message);
-    // Always fallback to STUN so the client gets something
-    return res.json({ success: true, data: CF_STUN });
+    return res.json({ success: true, data: STUN_FALLBACK });
   }
 });
 
