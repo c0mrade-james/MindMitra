@@ -11,6 +11,7 @@ const joinedSockets = new Map(); // socketId -> Set of sessionId (prevents dupli
 const initSocket = (httpServer) => {
   io = new Server(httpServer, {
     cors: { origin: env.clientUrl, credentials: true },
+    maxHttpBufferSize: 5e6,
   });
 
   io.use((socket, next) => {
@@ -127,6 +128,14 @@ const initSocket = (httpServer) => {
         logger.info(`ICE relayed from ${socket.userId} to ${targetUserId}`);
         io.to(to).emit('webrtc:ice', { fromUserId: socket.userId, candidate });
       }
+    });
+
+    // Media relay — forwards binary chunks to the other peer in the session
+    socket.on('session:media', ({ sessionId, data }) => {
+      socket.to(`session:${sessionId}`).emit('session:media', {
+        fromUserId: socket.userId,
+        data,
+      });
     });
   });
 

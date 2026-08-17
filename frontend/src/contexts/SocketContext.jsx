@@ -26,6 +26,7 @@ export const SocketProvider = ({ children }) => {
       auth: { token },
       transports: ['websocket'],
       autoConnect: true,
+      maxHttpBufferSize: 5e6,
     });
 
     newSocket.on('connect', () => {
