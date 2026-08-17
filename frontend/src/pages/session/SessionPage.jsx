@@ -12,7 +12,12 @@ const SessionPage = () => {
   const remoteVideoRef = useRef(null);
   const pcRef = useRef(null);
   const pendingIceRef = useRef([]);
-  const iceServersRef = useRef([{ urls: 'stun:stun.l.google.com:19302' }]);
+  const iceServersRef = useRef([
+    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+    { urls: 'stun:stun.l.google.com:19302' },
+  ]);
   const peerLeftTimerRef = useRef(null);
   const [appointment, setAppointment] = useState(null);
   const [sessionJoined, setSessionJoined] = useState(false);

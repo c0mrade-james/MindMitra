@@ -19,6 +19,15 @@ const STUN_DEFAULTS = [
   { urls: 'stun:stun1.l.google.com:19302' },
 ];
 
+// Free TURN servers from Open Relay project — no signup, no API key needed
+const OPEN_RELAY_ICE_SERVERS = [
+  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turns:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+  ...STUN_DEFAULTS,
+];
+
 function fetchJson(url, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { timeout: timeoutMs }, (res) => {
@@ -71,9 +80,9 @@ async function getIceServers() {
     logger.warn('Failed to parse ICE_SERVERS env var');
   }
 
-  cachedIceServers = STUN_DEFAULTS;
+  cachedIceServers = OPEN_RELAY_ICE_SERVERS;
   iceServersCachedAt = now;
-  return STUN_DEFAULTS;
+  return OPEN_RELAY_ICE_SERVERS;
 }
 
 const initSocket = (httpServer) => {
