@@ -72,7 +72,7 @@ router.get('/', async (_req, res) => {
 
     // Cloudflare Realtime TURN API — POST with TTL
     const response = await postJson(
-      `https://api.cloudflare.com/client/v4/accounts/${accountId}/realtime/turn/credentials`,
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/calls/turn/credentials`,
       { ttl: 86400 },
       { Authorization: `Bearer ${apiToken}` }
     );
