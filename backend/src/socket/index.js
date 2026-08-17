@@ -5,25 +5,44 @@ const logger = require('../utils/logger');
 
 let io;
 const userSocketMap = new Map(); // userId -> socketId
-const sessionReadyRooms = new Set();
+const sessionParticipants = new Map(); // sessionId -> Set of userIds
+
+const getIceServers = () => {
+  // Default STUN servers
+  const defaults = [{ urls: 'stun:stun.l.google.com:19302' }];
+
+  // If Metered.ca is configured, fetch short-lived TURN credentials
+  if (env.metered?.domain && env.metered?.apiKey) {
+    try {
+      const https = require('https');
+      const url = `https://${env.metered.domain}/api/v1/turn/credentials?key=${env.metered.apiKey}`;
+      // Synchronous fetch is not ideal but this is called infrequently and avoids async complexity in socket init
+      const data = require('child_process').execSync(`curl -s "${url}"`, { timeout: 5000 }).toString();
+      const creds = JSON.parse(data);
+      if (Array.isArray(creds) && creds.length > 0) {
+        return creds;
+      }
+    } catch (err) {
+      logger.warn('Failed to fetch Metered TURN credentials, falling back to STUN');
+    }
+  }
+
+  // Fallback to env-configured ICE servers or defaults
+  try {
+    if (env.iceServers) {
+      return JSON.parse(env.iceServers);
+    }
+  } catch (err) {
+    logger.warn('Failed to parse ICE_SERVERS env var');
+  }
+
+  return defaults;
+};
 
 const initSocket = (httpServer) => {
   io = new Server(httpServer, {
     cors: { origin: env.clientUrl, credentials: true },
   });
-
-  // Configure ICE servers if provided in env
-  try {
-    const iceRaw = env.iceServers;
-    if (iceRaw) {
-      // parse JSON array from env if present
-      const parsed = JSON.parse(iceRaw);
-      io._iceServers = parsed; // store for reference; not a standard field but useful for debugging
-      logger.info('Configured custom ICE servers for WebRTC');
-    }
-  } catch (err) {
-    logger.warn('Failed to parse ICE_SERVERS env var');
-  }
 
   io.use((socket, next) => {
     try {
@@ -53,17 +72,21 @@ const initSocket = (httpServer) => {
         if (uid !== studentId && uid !== counselorId) return socket.emit('session:error', { message: 'Not a participant' });
 
         socket.join(`session:${sessionId}`);
+
+        // Track which sessions this socket has joined (for cleanup on disconnect)
+        if (!socket.joinedSessionIds) socket.joinedSessionIds = new Set();
+        socket.joinedSessionIds.add(sessionId);
+
+        // Track participants per session
+        if (!sessionParticipants.has(sessionId)) sessionParticipants.set(sessionId, new Set());
+        sessionParticipants.get(sessionId).add(uid);
+
         logger.info(`Session joined: user ${uid} joined room session:${sessionId}`);
-        socket.emit('session:joined', { sessionId });
+        socket.emit('session:joined', { sessionId, iceServers: getIceServers() });
 
-        const clients = await io.in(`session:${sessionId}`).fetchSockets();
-        const participantCount = clients.filter((s) => {
-          const user = String(s.userId);
-          return user === studentId || user === counselorId;
-        }).length;
-
-        if (participantCount === 2 && !sessionReadyRooms.has(sessionId)) {
-          sessionReadyRooms.add(sessionId);
+        // Always emit session:ready when both participants are present (allows re-emission on reconnect)
+        const participants = sessionParticipants.get(sessionId);
+        if (participants.has(studentId) && participants.has(counselorId)) {
           logger.info(`Session ready: session:${sessionId}`);
           io.in(`session:${sessionId}`).emit('session:ready', { sessionId });
         }
@@ -74,7 +97,27 @@ const initSocket = (httpServer) => {
     });
 
     socket.on('disconnect', () => {
-      userSocketMap.delete(socket.userId);
+      // Only delete if this socket is the current one for this user (handles tab duplication)
+      if (userSocketMap.get(String(socket.userId)) === socket.id) {
+        userSocketMap.delete(socket.userId);
+      }
+
+      // Notify peers in all sessions this socket had joined
+      if (socket.joinedSessionIds) {
+        for (const sid of socket.joinedSessionIds) {
+          const participants = sessionParticipants.get(sid);
+          if (participants) {
+            participants.delete(String(socket.userId));
+            if (participants.size === 0) {
+              sessionParticipants.delete(sid);
+            }
+          }
+          socket.to(`session:${sid}`).emit('session:peer-left', {
+            sessionId: sid,
+            userId: socket.userId,
+          });
+        }
+      }
     });
 
     // WebRTC signaling relay: clients send messages with { targetUserId, payload }
