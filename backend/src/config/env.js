@@ -34,8 +34,8 @@ module.exports = {
     max: Number(process.env.RATE_LIMIT_MAX) || 200,
   },
   xirsys: {
-    ident: process.env.XIRSYS_IDENT || '',
-    secret: process.env.XIRSYS_SECRET || '',
+    ident: process.env.XIRSYS_USERNAME || '',
+    secret: process.env.XIRSYS_API_KEY || '',
     channel: process.env.XIRSYS_CHANNEL || '',
   },
 };

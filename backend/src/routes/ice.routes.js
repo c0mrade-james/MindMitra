@@ -75,7 +75,7 @@ async function fetchXirsysTurn() {
 router.get('/test', async (_req, res) => {
   const { ident, secret, channel } = env.xirsys;
   if (!ident || !secret || !channel) {
-    return res.json({ ok: false, error: 'XIRSYS_IDENT, XIRSYS_SECRET, or XIRSYS_CHANNEL not set on Render' });
+    return res.json({ ok: false, error: 'XIRSYS_USERNAME, XIRSYS_API_KEY, or XIRSYS_CHANNEL not set on Render' });
   }
   try {
     const iceServers = await fetchXirsysTurn();
