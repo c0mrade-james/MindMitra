@@ -13,6 +13,7 @@ const SessionPage = () => {
   const pcRef = useRef(null);
   const pendingIceRef = useRef([]);
   const iceServersRef = useRef([{ urls: 'stun:stun.l.google.com:19302' }]);
+  const peerLeftTimerRef = useRef(null);
   const [appointment, setAppointment] = useState(null);
   const [sessionJoined, setSessionJoined] = useState(false);
   const [sessionReady, setSessionReady] = useState(false);
@@ -137,8 +138,13 @@ const SessionPage = () => {
 
     const handleSessionReady = ({ sessionId: id }) => {
       console.log('[SessionPage] Session ready', id);
-      setSessionReady(true);
+      // Cancel any pending peer-left — peer reconnected
+      if (peerLeftTimerRef.current) {
+        clearTimeout(peerLeftTimerRef.current);
+        peerLeftTimerRef.current = null;
+      }
       setPeerLeft(false);
+      setSessionReady(true);
     };
 
     const handleOffer = async ({ fromUserId, offer }) => {
@@ -187,12 +193,16 @@ const SessionPage = () => {
     };
 
     const handlePeerLeft = ({ sessionId: id, userId }) => {
-      console.log('[SessionPage] Peer left', userId);
-      setPeerLeft(true);
-      if (remoteVideoRef.current?.srcObject) {
-        remoteVideoRef.current.srcObject.getTracks().forEach((track) => track.stop());
-        remoteVideoRef.current.srcObject = null;
-      }
+      console.log('[SessionPage] Peer left (waiting 3s grace period)', userId);
+      // Delay peer-left UI by 3s to allow for socket reconnection
+      peerLeftTimerRef.current = setTimeout(() => {
+        console.log('[SessionPage] Peer left confirmed', userId);
+        setPeerLeft(true);
+        if (remoteVideoRef.current?.srcObject) {
+          remoteVideoRef.current.srcObject.getTracks().forEach((track) => track.stop());
+          remoteVideoRef.current.srcObject = null;
+        }
+      }, 3000);
     };
 
     const handleSocketConnect = () => {
@@ -233,6 +243,7 @@ const SessionPage = () => {
   // Cleanup on unmount — stop camera and close peer connection
   useEffect(() => {
     return () => {
+      if (peerLeftTimerRef.current) clearTimeout(peerLeftTimerRef.current);
       stopTracksAndClosePeer();
     };
   }, [stopTracksAndClosePeer]);

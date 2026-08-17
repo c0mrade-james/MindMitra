@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const https = require('https');
 const { Server } = require('socket.io');
 const env = require('../config/env');
 const logger = require('../utils/logger');
@@ -6,38 +7,74 @@ const logger = require('../utils/logger');
 let io;
 const userSocketMap = new Map(); // userId -> socketId
 const sessionParticipants = new Map(); // sessionId -> Set of userIds
+const joinedSockets = new Map(); // socketId -> Set of sessionId (prevents duplicate joins)
 
-const getIceServers = () => {
-  // Default STUN servers
-  const defaults = [{ urls: 'stun:stun.l.google.com:19302' }];
+// Cache TURN credentials — refresh every 4 minutes (credentials expire in 5 min for Metered)
+let cachedIceServers = null;
+let iceServersCachedAt = 0;
+const ICE_CACHE_TTL = 4 * 60 * 1000;
 
-  // If Metered.ca is configured, fetch short-lived TURN credentials
+const STUN_DEFAULTS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+];
+
+function fetchJson(url, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { timeout: timeoutMs }, (res) => {
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        res.resume();
+        return reject(new Error(`HTTP ${res.statusCode}`));
+      }
+      let body = '';
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Request timeout')); });
+  });
+}
+
+async function getIceServers() {
+  const now = Date.now();
+  if (cachedIceServers && now - iceServersCachedAt < ICE_CACHE_TTL) {
+    return cachedIceServers;
+  }
+
+  // Try Metered.ca TURN credentials first
   if (env.metered?.domain && env.metered?.apiKey) {
     try {
-      const https = require('https');
       const url = `https://${env.metered.domain}/api/v1/turn/credentials?key=${env.metered.apiKey}`;
-      // Synchronous fetch is not ideal but this is called infrequently and avoids async complexity in socket init
-      const data = require('child_process').execSync(`curl -s "${url}"`, { timeout: 5000 }).toString();
-      const creds = JSON.parse(data);
+      const creds = await fetchJson(url);
       if (Array.isArray(creds) && creds.length > 0) {
+        cachedIceServers = creds;
+        iceServersCachedAt = now;
+        logger.info('Fetched Metered TURN credentials successfully');
         return creds;
       }
     } catch (err) {
-      logger.warn('Failed to fetch Metered TURN credentials, falling back to STUN');
+      logger.warn('Failed to fetch Metered TURN credentials:', err.message);
     }
   }
 
-  // Fallback to env-configured ICE servers or defaults
+  // Fallback to env-configured ICE servers
   try {
     if (env.iceServers) {
-      return JSON.parse(env.iceServers);
+      const parsed = JSON.parse(env.iceServers);
+      cachedIceServers = parsed;
+      iceServersCachedAt = now;
+      return parsed;
     }
   } catch (err) {
     logger.warn('Failed to parse ICE_SERVERS env var');
   }
 
-  return defaults;
-};
+  cachedIceServers = STUN_DEFAULTS;
+  iceServersCachedAt = now;
+  return STUN_DEFAULTS;
+}
 
 const initSocket = (httpServer) => {
   io = new Server(httpServer, {
@@ -71,7 +108,20 @@ const initSocket = (httpServer) => {
         const counselorId = String(appt.counselor);
         if (uid !== studentId && uid !== counselorId) return socket.emit('session:error', { message: 'Not a participant' });
 
+        // Prevent duplicate session:join from the same socket
+        if (!joinedSockets.has(socket.id)) joinedSockets.set(socket.id, new Set());
+        if (joinedSockets.get(socket.id).has(sessionId)) {
+          // Already joined this session, just re-send joined + ready
+          socket.emit('session:joined', { sessionId, iceServers: await getIceServers() });
+          const participants = sessionParticipants.get(sessionId);
+          if (participants && participants.has(studentId) && participants.has(counselorId)) {
+            socket.emit('session:ready', { sessionId });
+          }
+          return;
+        }
+
         socket.join(`session:${sessionId}`);
+        joinedSockets.get(socket.id).add(sessionId);
 
         // Track which sessions this socket has joined (for cleanup on disconnect)
         if (!socket.joinedSessionIds) socket.joinedSessionIds = new Set();
@@ -82,7 +132,7 @@ const initSocket = (httpServer) => {
         sessionParticipants.get(sessionId).add(uid);
 
         logger.info(`Session joined: user ${uid} joined room session:${sessionId}`);
-        socket.emit('session:joined', { sessionId, iceServers: getIceServers() });
+        socket.emit('session:joined', { sessionId, iceServers: await getIceServers() });
 
         // Always emit session:ready when both participants are present (allows re-emission on reconnect)
         const participants = sessionParticipants.get(sessionId);
@@ -101,6 +151,9 @@ const initSocket = (httpServer) => {
       if (userSocketMap.get(String(socket.userId)) === socket.id) {
         userSocketMap.delete(socket.userId);
       }
+
+      // Clean up joined sessions tracking
+      joinedSockets.delete(socket.id);
 
       // Notify peers in all sessions this socket had joined
       if (socket.joinedSessionIds) {
