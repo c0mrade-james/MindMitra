@@ -9,24 +9,21 @@ let cachedIceServers = null;
 let cacheTimestamp = 0;
 const CACHE_TTL = 50 * 1000;
 
-// Free STUN servers (always available)
+// Free STUN servers (minimal set — UDP often blocked, TURN is more reliable)
 const STUN_SERVERS = [
-  { urls: 'stun:stun.cloudflare.com:3478' },
   { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
 ];
 
-// Free TURN servers from Open Relay — no API key, no signup
+// Free TURN servers from Open Relay — TCP/TLS first (UDP blocked on many networks)
 const OPEN_RELAY_TURN = [
-  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
   { urls: 'turns:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
+  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
 ];
 
-// Baseline: STUN + Open Relay TURN (always works, no config needed)
-const BASELINE_ICE_SERVERS = [...STUN_SERVERS, ...OPEN_RELAY_TURN];
+// Baseline: Open Relay TURN (TCP/TLS first) + STUN
+const BASELINE_ICE_SERVERS = [...OPEN_RELAY_TURN, ...STUN_SERVERS];
 
 function httpsRequest(options, body) {
   return new Promise((resolve, reject) => {
@@ -69,7 +66,7 @@ async function fetchXirsysTurn() {
   }
 
   // Split single ICE server (with multiple URLs) into individual objects
-  // so browser can try each transport independently
+  // Priority: TCP/TLS first (UDP often blocked on restrictive networks)
   const raw = response.v.iceServers;
   const split = [];
   for (const server of raw) {
@@ -82,6 +79,18 @@ async function fetchXirsysTurn() {
       });
     }
   }
+  // Sort: TLS (turns) first, then TCP, then UDP last
+  split.sort((a, b) => {
+    const u = (s) => String(s.urls);
+    const priority = (s) => {
+      const url = u(s);
+      if (url.startsWith('turns:')) return 0; // TLS first
+      if (url.includes('transport=tcp')) return 1; // TCP second
+      if (url.startsWith('turn:')) return 2; // UDP last
+      return 3; // STUN
+    };
+    return priority(a) - priority(b);
+  });
   return split;
 }
 
@@ -112,11 +121,11 @@ router.get('/', async (_req, res) => {
         const turnServers = await fetchXirsysTurn();
 
         if (turnServers && turnServers.length > 0) {
-          // Priority: Xirsys TURN first, then Open Relay as fallback, then STUN
+          // Priority: Xirsys TCP/TLS first, Open Relay TCP, STUN last
           const iceServers = [...turnServers, ...OPEN_RELAY_TURN, ...STUN_SERVERS];
           cachedIceServers = iceServers;
           cacheTimestamp = Date.now();
-          logger.info(`Xirsys TURN success: ${turnServers.length} individual servers (+ Open Relay + STUN fallback)`);
+          logger.info(`Xirsys TURN success: ${turnServers.length} servers (TCP/TLS prioritized)`);
           return res.json({ success: true, data: iceServers });
         }
 
