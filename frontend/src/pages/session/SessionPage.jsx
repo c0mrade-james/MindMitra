@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useSocket } from '../../contexts/SocketContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { appointmentApi } from '../../services/appointment.api';
+import axiosInstance from '../../services/axiosInstance';
 
 const SessionPage = () => {
   const { sessionId } = useParams();
@@ -12,12 +13,7 @@ const SessionPage = () => {
   const remoteVideoRef = useRef(null);
   const pcRef = useRef(null);
   const pendingIceRef = useRef([]);
-  const iceServersRef = useRef([
-    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-    { urls: 'stun:stun.l.google.com:19302' },
-  ]);
+  const iceServersRef = useRef([{ urls: 'stun:stun.l.google.com:19302' }]);
   const peerLeftTimerRef = useRef(null);
   const [appointment, setAppointment] = useState(null);
   const [sessionJoined, setSessionJoined] = useState(false);
@@ -37,6 +33,20 @@ const SessionPage = () => {
         navigate(-1);
       });
   }, [sessionId]);
+
+  // Fetch TURN credentials from backend (Cloudflare Realtime)
+  useEffect(() => {
+    axiosInstance.get('/ice-servers')
+      .then((res) => {
+        if (res.data?.data?.length > 0) {
+          iceServersRef.current = res.data.data;
+          console.log('[SessionPage] Loaded', res.data.data.length, 'ICE servers from backend');
+        }
+      })
+      .catch((err) => {
+        console.warn('[SessionPage] Failed to fetch ICE servers, using STUN fallback', err);
+      });
+  }, []);
 
   const stopTracksAndClosePeer = useCallback(() => {
     if (pcRef.current) {
@@ -132,12 +142,8 @@ const SessionPage = () => {
   useEffect(() => {
     if (!socket || !appointment) return undefined;
 
-    const handleSessionJoined = ({ sessionId: id, iceServers }) => {
+    const handleSessionJoined = ({ sessionId: id }) => {
       console.log('[SessionPage] Joined session', id);
-      if (iceServers && iceServers.length > 0) {
-        iceServersRef.current = iceServers;
-        console.log('[SessionPage] Using custom ICE servers');
-      }
       setSessionJoined(true);
     };
 

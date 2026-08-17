@@ -33,13 +33,8 @@ module.exports = {
     windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
     max: Number(process.env.RATE_LIMIT_MAX) || 200,
   },
-  // optional ICE servers (comma-separated JSON entries) e.g. [{"urls":"stun:stun.l.google.com:19302"}]
-  iceServers: process.env.ICE_SERVERS || '',
-  // Metered.ca TURN service — preferred over the static ICE_SERVERS above
-  // when both are set, since it issues short-lived rotating credentials
-  // fetched server-side instead of a fixed username/password baked into env.
-  metered: {
-    domain: process.env.METERED_DOMAIN || '',
-    apiKey: process.env.METERED_API_KEY || '',
+  cloudflare: {
+    accountId: process.env.CLOUDFLARE_ACCOUNT_ID || '',
+    apiToken: process.env.CLOUDFLARE_API_TOKEN || '',
   },
 };

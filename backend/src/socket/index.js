@@ -1,5 +1,4 @@
 const jwt = require('jsonwebtoken');
-const https = require('https');
 const { Server } = require('socket.io');
 const env = require('../config/env');
 const logger = require('../utils/logger');
@@ -8,82 +7,6 @@ let io;
 const userSocketMap = new Map(); // userId -> socketId
 const sessionParticipants = new Map(); // sessionId -> Set of userIds
 const joinedSockets = new Map(); // socketId -> Set of sessionId (prevents duplicate joins)
-
-// Cache TURN credentials — refresh every 4 minutes (credentials expire in 5 min for Metered)
-let cachedIceServers = null;
-let iceServersCachedAt = 0;
-const ICE_CACHE_TTL = 4 * 60 * 1000;
-
-const STUN_DEFAULTS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-];
-
-// Free TURN servers from Open Relay project — no signup, no API key needed
-const OPEN_RELAY_ICE_SERVERS = [
-  { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-  { urls: 'turns:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
-  ...STUN_DEFAULTS,
-];
-
-function fetchJson(url, timeoutMs = 5000) {
-  return new Promise((resolve, reject) => {
-    const req = https.get(url, { timeout: timeoutMs }, (res) => {
-      if (res.statusCode < 200 || res.statusCode >= 300) {
-        res.resume();
-        return reject(new Error(`HTTP ${res.statusCode}`));
-      }
-      let body = '';
-      res.on('data', (chunk) => { body += chunk; });
-      res.on('end', () => {
-        try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
-      });
-    });
-    req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('Request timeout')); });
-  });
-}
-
-async function getIceServers() {
-  const now = Date.now();
-  if (cachedIceServers && now - iceServersCachedAt < ICE_CACHE_TTL) {
-    return cachedIceServers;
-  }
-
-  // Try Metered.ca TURN credentials first
-  if (env.metered?.domain && env.metered?.apiKey) {
-    try {
-      const url = `https://${env.metered.domain}/api/v1/turn/credentials?key=${env.metered.apiKey}`;
-      const creds = await fetchJson(url);
-      if (Array.isArray(creds) && creds.length > 0) {
-        cachedIceServers = creds;
-        iceServersCachedAt = now;
-        logger.info('Fetched Metered TURN credentials successfully');
-        return creds;
-      }
-    } catch (err) {
-      logger.warn('Failed to fetch Metered TURN credentials:', err.message);
-    }
-  }
-
-  // Fallback to env-configured ICE servers
-  try {
-    if (env.iceServers) {
-      const parsed = JSON.parse(env.iceServers);
-      cachedIceServers = parsed;
-      iceServersCachedAt = now;
-      return parsed;
-    }
-  } catch (err) {
-    logger.warn('Failed to parse ICE_SERVERS env var');
-  }
-
-  cachedIceServers = OPEN_RELAY_ICE_SERVERS;
-  iceServersCachedAt = now;
-  return OPEN_RELAY_ICE_SERVERS;
-}
 
 const initSocket = (httpServer) => {
   io = new Server(httpServer, {
@@ -120,8 +43,7 @@ const initSocket = (httpServer) => {
         // Prevent duplicate session:join from the same socket
         if (!joinedSockets.has(socket.id)) joinedSockets.set(socket.id, new Set());
         if (joinedSockets.get(socket.id).has(sessionId)) {
-          // Already joined this session, just re-send joined + ready
-          socket.emit('session:joined', { sessionId, iceServers: await getIceServers() });
+          socket.emit('session:joined', { sessionId });
           const participants = sessionParticipants.get(sessionId);
           if (participants && participants.has(studentId) && participants.has(counselorId)) {
             socket.emit('session:ready', { sessionId });
@@ -141,7 +63,7 @@ const initSocket = (httpServer) => {
         sessionParticipants.get(sessionId).add(uid);
 
         logger.info(`Session joined: user ${uid} joined room session:${sessionId}`);
-        socket.emit('session:joined', { sessionId, iceServers: await getIceServers() });
+        socket.emit('session:joined', { sessionId });
 
         // Always emit session:ready when both participants are present (allows re-emission on reconnect)
         const participants = sessionParticipants.get(sessionId);
