@@ -38,7 +38,7 @@ const SessionPage = () => {
       });
   }, [sessionId]);
 
-  // Fetch TURN credentials from backend (Cloudflare Realtime)
+  // Fetch TURN credentials from backend
   const iceServersLoadedRef = useRef(false);
   useEffect(() => {
     axiosInstance.get('/ice-servers')
@@ -47,7 +47,11 @@ const SessionPage = () => {
           iceServersRef.current = res.data.data;
           iceServersLoadedRef.current = true;
           console.log('[SessionPage] Loaded', res.data.data.length, 'ICE servers from backend');
-          console.log('[SessionPage] ICE servers:', JSON.stringify(res.data.data.map(s => s.urls)));
+          res.data.data.forEach((s, i) => {
+            const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+            const type = s.username ? 'TURN' : 'STUN';
+            console.log(`  [${i}] ${type}:`, urls.join(', '));
+          });
         }
       })
       .catch((err) => {
@@ -127,19 +131,32 @@ const SessionPage = () => {
     stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
     pc.ontrack = (evt) => {
-      console.log('[SessionPage] Remote stream attached, tracks:', evt.streams[0]?.getTracks().length);
-      if (remoteVideoRef.current) {
-        remoteVideoRef.current.srcObject = evt.streams[0];
+      console.log('[SessionPage] ontrack — kind:', evt.track.kind, 'streams:', evt.streams.length);
+      if (evt.streams[0]) {
+        console.log('[SessionPage] Remote stream tracks:', evt.streams[0].getTracks().map(t => t.kind));
+        if (remoteVideoRef.current) {
+          remoteVideoRef.current.srcObject = evt.streams[0];
+        }
       }
     };
 
     pc.onicecandidate = (evt) => {
-      if (evt.candidate && appointment) {
-        const other = getOtherUserId();
-        if (other) {
-          socket.emit('webrtc:ice', { targetUserId: other, candidate: evt.candidate });
+      if (evt.candidate) {
+        const c = evt.candidate;
+        console.log('[SessionPage] ICE candidate:', c.type || 'unknown', c.protocol, c.address || c.ip, c.port);
+        if (appointment) {
+          const other = getOtherUserId();
+          if (other) {
+            socket.emit('webrtc:ice', { targetUserId: other, candidate: evt.candidate });
+          }
         }
+      } else {
+        console.log('[SessionPage] ICE gathering complete — no more candidates');
       }
+    };
+
+    pc.onicegatheringstatechange = () => {
+      console.log('[SessionPage] ICE gathering state:', pc.iceGatheringState);
     };
 
     pc.onconnectionstatechange = () => {

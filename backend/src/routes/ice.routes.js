@@ -7,7 +7,7 @@ const router = express.Router();
 
 let cachedIceServers = null;
 let cacheTimestamp = 0;
-const CACHE_TTL = 20 * 60 * 1000;
+const CACHE_TTL = 50 * 1000;
 
 // Free STUN servers (always available)
 const STUN_SERVERS = [
@@ -98,10 +98,10 @@ router.get('/', async (_req, res) => {
         const turnServers = await fetchXirsysTurn();
 
         if (turnServers && turnServers.length > 0) {
-          const iceServers = [...STUN_SERVERS, ...turnServers];
+          const iceServers = [...STUN_SERVERS, ...turnServers, ...OPEN_RELAY_TURN];
           cachedIceServers = iceServers;
           cacheTimestamp = Date.now();
-          logger.info(`Xirsys TURN success: ${turnServers.length} servers`);
+          logger.info(`Xirsys TURN success: ${turnServers.length} servers (+ Open Relay fallback)`);
           return res.json({ success: true, data: iceServers });
         }
 
