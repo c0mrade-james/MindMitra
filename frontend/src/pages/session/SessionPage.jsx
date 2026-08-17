@@ -111,14 +111,22 @@ const SessionPage = () => {
       localVideoRef.current.srcObject = stream;
     }
 
-    // Enforce plural "urls" format and filter out malformed entries
-    const servers = iceServersRef.current.map((s) => ({
-      urls: s.urls || s.url,
-      ...(s.username && { username: s.username }),
-      ...(s.credential && { credential: s.credential }),
-    }));
+    // Enforce plural "urls" format — only TCP/TLS TURN servers (UDP blocked on this network)
+    const servers = iceServersRef.current
+      .filter((s) => {
+        const url = Array.isArray(s.urls) ? s.urls[0] : s.urls;
+        // Skip UDP-only servers — they timeout on restrictive networks
+        if (url && url.startsWith('stun:')) return false;
+        if (url && url.startsWith('turn:') && !url.includes('transport=tcp')) return false;
+        return true;
+      })
+      .map((s) => ({
+        urls: s.urls || s.url,
+        ...(s.username && { username: s.username }),
+        ...(s.credential && { credential: s.credential }),
+      }));
 
-    console.log('[SessionPage] ICE servers count:', servers.length);
+    console.log('[SessionPage] ICE servers (TCP/TLS only):', servers.length);
     servers.forEach((s, i) => {
       const url = Array.isArray(s.urls) ? s.urls.join(', ') : s.urls;
       console.log(`  [${i}] ${s.username ? 'TURN' : 'STUN'}: ${url}`);
@@ -126,7 +134,7 @@ const SessionPage = () => {
 
     const pc = new RTCPeerConnection({
       iceServers: servers,
-      iceTransportPolicy: 'all',
+      iceTransportPolicy: 'relay',
       iceCandidatePoolSize: 10,
     });
     pcRef.current = pc;
