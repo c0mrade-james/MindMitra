@@ -119,7 +119,10 @@ const SessionPage = () => {
     }));
 
     console.log('[SessionPage] ICE servers count:', servers.length);
-    servers.forEach((s, i) => console.log(`  [${i}]`, s.urls, s.username ? '(TURN)' : '(STUN)'));
+    servers.forEach((s, i) => {
+      const url = Array.isArray(s.urls) ? s.urls.join(', ') : s.urls;
+      console.log(`  [${i}] ${s.username ? 'TURN' : 'STUN'}: ${url}`);
+    });
 
     const pc = new RTCPeerConnection({
       iceServers: servers,
@@ -166,6 +169,10 @@ const SessionPage = () => {
 
     pc.oniceconnectionstatechange = () => {
       console.log('[SessionPage] ICE connection state:', pc.iceConnectionState);
+    };
+
+    pc.onicecandidateerror = (evt) => {
+      console.warn('[SessionPage] ICE candidate error:', evt.url || evt.address || 'unknown', 'error:', evt.errorCode, evt.errorText);
     };
 
     setStarted(true);

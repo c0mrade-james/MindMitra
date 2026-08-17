@@ -56,7 +56,7 @@ async function fetchXirsysTurn() {
 
   const response = await httpsRequest({
     hostname: 'global.xirsys.net',
-    path: `/_turn/${encodedChannel}?webrtc=1&expire=60`,
+    path: `/_turn/${encodedChannel}?webrtc=1&expire=120`,
     method: 'PUT',
     headers: {
       Authorization: `Basic ${auth}`,
@@ -68,7 +68,21 @@ async function fetchXirsysTurn() {
     throw new Error(`Xirsys API error: ${response.s}`);
   }
 
-  return response.v.iceServers;
+  // Split single ICE server (with multiple URLs) into individual objects
+  // so browser can try each transport independently
+  const raw = response.v.iceServers;
+  const split = [];
+  for (const server of raw) {
+    const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+    for (const url of urls) {
+      split.push({
+        urls: url,
+        ...(server.username && { username: server.username }),
+        ...(server.credential && { credential: server.credential }),
+      });
+    }
+  }
+  return split;
 }
 
 // Test endpoint — open in browser to check Xirsys config
@@ -98,10 +112,11 @@ router.get('/', async (_req, res) => {
         const turnServers = await fetchXirsysTurn();
 
         if (turnServers && turnServers.length > 0) {
-          const iceServers = [...STUN_SERVERS, ...turnServers, ...OPEN_RELAY_TURN];
+          // Priority: Xirsys TURN first, then Open Relay as fallback, then STUN
+          const iceServers = [...turnServers, ...OPEN_RELAY_TURN, ...STUN_SERVERS];
           cachedIceServers = iceServers;
           cacheTimestamp = Date.now();
-          logger.info(`Xirsys TURN success: ${turnServers.length} servers (+ Open Relay fallback)`);
+          logger.info(`Xirsys TURN success: ${turnServers.length} individual servers (+ Open Relay + STUN fallback)`);
           return res.json({ success: true, data: iceServers });
         }
 
