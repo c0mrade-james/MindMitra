@@ -25,53 +25,61 @@ const OPEN_RELAY_TURN = [
   { urls: 'turns:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' },
 ];
 
-// Always return STUN + Open Relay TURN as baseline (guaranteed free, no config needed)
+// Baseline: STUN + Open Relay TURN (always works, no config needed)
 const BASELINE_ICE_SERVERS = [...STUN_SERVERS, ...OPEN_RELAY_TURN];
 
-function postJson(url, body, headers = {}, timeoutMs = 8000) {
+function httpsRequest(options, body) {
   return new Promise((resolve, reject) => {
-    const urlObj = new URL(url);
-    const bodyStr = JSON.stringify(body);
-    const req = https.request(
-      {
-        hostname: urlObj.hostname,
-        path: urlObj.pathname + urlObj.search,
-        method: 'POST',
-        headers: {
-          ...headers,
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(bodyStr),
-        },
-        timeout: timeoutMs,
-      },
-      (res) => {
-        let data = '';
-        res.on('data', (chunk) => { data += chunk; });
-        res.on('end', () => {
-          try { resolve(JSON.parse(data)); } catch (e) { reject(new Error(`JSON parse error: ${data.substring(0, 500)}`)); }
-        });
-      }
-    );
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); } catch (e) { reject(new Error(`JSON parse error: ${data.substring(0, 500)}`)); }
+      });
+    });
     req.on('error', reject);
     req.on('timeout', () => { req.destroy(); reject(new Error('Request timeout')); });
-    req.write(bodyStr);
+    if (body) req.write(body);
     req.end();
   });
 }
 
-// Test endpoint — open in browser to check Cloudflare token
+// Fetch TURN credentials from Xirsys
+async function fetchXirsysTurn() {
+  const { ident, secret, channel } = env.xirsys;
+  if (!ident || !secret || !channel) {
+    throw new Error('Xirsys credentials not configured');
+  }
+
+  const auth = Buffer.from(`${ident}:${secret}`).toString('base64');
+  const encodedChannel = encodeURIComponent(channel);
+
+  const response = await httpsRequest({
+    hostname: 'global.xirsys.net',
+    path: `/_turn/${encodedChannel}?webrtc=1&expire=60`,
+    method: 'PUT',
+    headers: {
+      Authorization: `Basic ${auth}`,
+    },
+    timeout: 10000,
+  });
+
+  if (response.s !== 'ok') {
+    throw new Error(`Xirsys API error: ${response.s}`);
+  }
+
+  return response.v.iceServers;
+}
+
+// Test endpoint — open in browser to check Xirsys config
 router.get('/test', async (_req, res) => {
-  const { accountId, apiToken } = env.cloudflare;
-  if (!accountId || !apiToken) {
-    return res.json({ ok: false, error: 'CLOUDFLARE_ACCOUNT_ID or CLOUDFLARE_API_TOKEN not set on Render' });
+  const { ident, secret, channel } = env.xirsys;
+  if (!ident || !secret || !channel) {
+    return res.json({ ok: false, error: 'XIRSYS_IDENT, XIRSYS_SECRET, or XIRSYS_CHANNEL not set on Render' });
   }
   try {
-    const response = await postJson(
-      `https://api.cloudflare.com/client/v4/accounts/${accountId}/calls/turn/credentials`,
-      { ttl: 86400 },
-      { Authorization: `Bearer ${apiToken}` }
-    );
-    return res.json({ ok: true, accountId: accountId.substring(0, 8) + '...', response });
+    const iceServers = await fetchXirsysTurn();
+    return res.json({ ok: true, ident: ident.substring(0, 5) + '...', channel, iceServerCount: iceServers.length, iceServers });
   } catch (err) {
     return res.json({ ok: false, error: err.message });
   }
@@ -83,30 +91,23 @@ router.get('/', async (_req, res) => {
       return res.json({ success: true, data: cachedIceServers });
     }
 
-    const { accountId, apiToken } = env.cloudflare;
-
-    // Try Cloudflare TURN first if configured
-    if (accountId && apiToken) {
+    // Try Xirsys first if configured
+    if (env.xirsys.ident && env.xirsys.secret && env.xirsys.channel) {
       try {
-        logger.info(`Fetching Cloudflare TURN for account: ${accountId.substring(0, 8)}...`);
-        const response = await postJson(
-          `https://api.cloudflare.com/client/v4/accounts/${accountId}/calls/turn/credentials`,
-          { ttl: 86400 },
-          { Authorization: `Bearer ${apiToken}` }
-        );
+        logger.info(`Fetching Xirsys TURN for channel: ${env.xirsys.channel}`);
+        const turnServers = await fetchXirsysTurn();
 
-        if (response.success && response.result?.iceServers?.length > 0) {
-          const turnServers = response.result.iceServers;
+        if (turnServers && turnServers.length > 0) {
           const iceServers = [...STUN_SERVERS, ...turnServers];
           cachedIceServers = iceServers;
           cacheTimestamp = Date.now();
-          logger.info(`Cloudflare TURN success: ${turnServers.length} servers`);
+          logger.info(`Xirsys TURN success: ${turnServers.length} servers`);
           return res.json({ success: true, data: iceServers });
         }
 
-        logger.warn('Cloudflare TURN returned no servers:', JSON.stringify(response.errors || response).substring(0, 200));
+        logger.warn('Xirsys returned no servers');
       } catch (err) {
-        logger.warn('Cloudflare TURN failed:', err.message);
+        logger.warn('Xirsys TURN failed:', err.message);
       }
     }
 

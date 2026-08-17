@@ -33,8 +33,9 @@ module.exports = {
     windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
     max: Number(process.env.RATE_LIMIT_MAX) || 200,
   },
-  cloudflare: {
-    accountId: process.env.CLOUDFLARE_ACCOUNT_ID || '',
-    apiToken: process.env.CLOUDFLARE_API_TOKEN || '',
+  xirsys: {
+    ident: process.env.XIRSYS_IDENT || '',
+    secret: process.env.XIRSYS_SECRET || '',
+    channel: process.env.XIRSYS_CHANNEL || '',
   },
 };
