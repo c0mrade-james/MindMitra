@@ -53,10 +53,10 @@ const DashboardLayout = () => {
   };
 
   return (
-    <div className="min-h-screen flex bg-sand-100 dark:bg-teal-900">
+    <div className="min-h-screen bg-sand-100 dark:bg-teal-900">
       {/* Sidebar */}
       <aside
-        className={`fixed md:static z-40 inset-y-0 left-0 w-64 bg-teal-600 text-white transform transition-transform duration-200
+        className={`fixed z-40 inset-y-0 left-0 w-64 bg-teal-600 text-white transform transition-transform duration-200
         ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}
       >
         <div className="flex items-center gap-2 px-6 py-5 font-display text-xl font-semibold border-b border-white/10">
@@ -94,7 +94,7 @@ const DashboardLayout = () => {
       )}
 
       {/* Main */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="md:ml-64 flex flex-col min-w-0 min-h-screen">
         <header className="flex items-center justify-between px-6 py-4 bg-sand-50 dark:bg-teal-800 border-b border-teal-600/10">
           <button className="md:hidden" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
             <Menu className="w-6 h-6 text-teal-700 dark:text-white" />
