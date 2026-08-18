@@ -34,8 +34,8 @@ export default {
         },
       },
       fontFamily: {
-        display: ['"Fraunces"', 'serif'],
-        body: ['"Plus Jakarta Sans"', 'sans-serif'],
+        display: ['"Atkinson Hyperlegible Next"', 'sans-serif'],
+        body: ['"Atkinson Hyperlegible Next"', 'sans-serif'],
       },
       boxShadow: {
         soft: '0 4px 24px -4px rgba(31, 75, 67, 0.12)',
