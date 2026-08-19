@@ -1,18 +1,21 @@
 import { forwardRef, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import DatePicker from 'react-datepicker';
 import 'react-datepicker/dist/react-datepicker.css';
 import toast from 'react-hot-toast';
-import { CalendarDays, Plus, X } from 'lucide-react';
+import { CalendarDays, Plus, Video, X } from 'lucide-react';
 import { appointmentApi } from '../../services/appointment.api';
 import Rating from '../../components/forms/Rating';
 import { userApi } from '../../services/user.api';
 import Card from '../../components/shared/Card';
 import EmptyState from '../../components/shared/EmptyState';
 import TextArea from '../../components/forms/TextArea';
+import { useSocket } from '../../contexts/SocketContext';
 
 const statusStyle = {
   pending: 'bg-amber-500/10 text-amber-600',
   approved: 'bg-teal-600/10 text-teal-700',
+  in_session: 'bg-teal-500/20 text-teal-700',
   completed: 'bg-teal-600/20 text-teal-800',
   cancelled: 'bg-teal-600/5 text-teal-600/50',
   rejected: 'bg-clay-500/10 text-clay-600',
@@ -31,6 +34,8 @@ const DateInput = forwardRef(({ value, onClick }, ref) => (
 ));
 
 const StudentAppointments = () => {
+  const navigate = useNavigate();
+  const { socket } = useSocket();
   const [appointments, setAppointments] = useState([]);
   const [counselors, setCounselors] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -49,6 +54,14 @@ const StudentAppointments = () => {
   };
 
   useEffect(() => { load(); }, []);
+
+  // Real-time: re-fetch appointments when a new notification arrives
+  useEffect(() => {
+    if (!socket) return;
+    const handleNotification = () => load();
+    socket.on('notification:new', handleNotification);
+    return () => socket.off('notification:new', handleNotification);
+  }, [socket]);
 
   const formatDateForApi = (date) => {
     if (!date) return '';
@@ -235,9 +248,20 @@ const StudentAppointments = () => {
                 <p className="text-xs text-teal-700/60 mt-1 max-w-xs">{a.reason}</p>
               </div>
               <div className="flex items-center gap-3">
-                <span className={`text-xs px-2.5 py-1 rounded-full capitalize font-medium ${statusStyle[a.status]}`}>{a.status}</span>
+                <span className={`text-xs px-2.5 py-1 rounded-full capitalize font-medium ${statusStyle[a.status]}`}>{a.status === 'in_session' ? 'In Session' : a.status}</span>
                 {a.status === 'pending' && (
                   <button onClick={() => handleCancel(a._id)} className="text-xs text-clay-600 hover:underline">Cancel</button>
+                )}
+                {a.status === 'in_session' && a.sessionId && (
+                  <button
+                    onClick={() => navigate(`/session/${a.sessionId}`)}
+                    className="btn btn-sm bg-teal-600 hover:bg-teal-700 text-white border-none rounded-xl gap-1.5"
+                  >
+                    <Video className="w-4 h-4" /> Join Session
+                  </button>
+                )}
+                {a.status === 'approved' && (
+                  <span className="text-xs text-teal-600/70 italic">Waiting for counselor</span>
                 )}
               </div>
                 {a.status === 'completed' && !a.rating && (
