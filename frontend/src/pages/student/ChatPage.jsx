@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { Send, Brain, AlertTriangle, Phone } from 'lucide-react';
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { Send, Brain, AlertTriangle, Phone, Square } from 'lucide-react';
 import toast from 'react-hot-toast';
 import ReactMarkdown from 'react-markdown';
 import { chatApi } from '../../services/chat.api';
@@ -13,11 +13,24 @@ const ChatPage = () => {
   const [sessionId, setSessionId] = useState(null);
   const [sending, setSending] = useState(false);
   const [emergencyBanner, setEmergencyBanner] = useState(false);
+  const [streamingContent, setStreamingContent] = useState('');
   const scrollRef = useRef(null);
+  const abortRef = useRef(null);
+
+  const scrollToBottom = useCallback(() => {
+    scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, []);
 
   useEffect(() => {
-    scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    scrollToBottom();
+  }, [messages, streamingContent, scrollToBottom]);
+
+  // Cleanup: abort stream on unmount
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   const handleSend = async (e) => {
     e.preventDefault();
@@ -27,17 +40,53 @@ const ChatPage = () => {
     setMessages((m) => [...m, { role: 'user', content: text }]);
     setInput('');
     setSending(true);
+    setStreamingContent('');
 
-    try {
-      const { data } = await chatApi.sendMessage(text, sessionId);
-      setSessionId(data.data.sessionId);
-      setMessages((m) => [...m, { role: 'ai', content: data.data.reply }]);
-      if (data.data.emergency) setEmergencyBanner(true);
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Failed to send message');
-    } finally {
-      setSending(false);
-    }
+    const controller = chatApi.streamMessage(text, sessionId, {
+      onStart: (event) => {
+        setSessionId(event.sessionId);
+        if (event.emergency) setEmergencyBanner(true);
+      },
+      onChunk: (event) => {
+        setStreamingContent((prev) => prev + event.content);
+      },
+      onDone: () => {
+        // Move streamed content into messages as a complete AI message
+        setStreamingContent((current) => {
+          if (current) {
+            setMessages((m) => [...m, { role: 'ai', content: current }]);
+          }
+          return '';
+        });
+        setSending(false);
+      },
+      onError: (message) => {
+        // Keep partial content if any was received
+        setStreamingContent((current) => {
+          if (current) {
+            setMessages((m) => [...m, { role: 'ai', content: current }]);
+          }
+          return '';
+        });
+        setSending(false);
+        toast.error(message || 'Failed to get response');
+      },
+    });
+
+    abortRef.current = controller;
+  };
+
+  const handleStop = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    // Preserve any partial content already received
+    setStreamingContent((current) => {
+      if (current) {
+        setMessages((m) => [...m, { role: 'ai', content: current }]);
+      }
+      return '';
+    });
+    setSending(false);
   };
 
   return (
@@ -85,6 +134,8 @@ const ChatPage = () => {
                       a: ({ href, children }) => (
                         <a
                           href={href}
+                          target="_blank"
+                          rel="noopener noreferrer"
                           className="inline-flex items-center gap-1.5 mt-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white font-medium rounded-xl text-xs transition-colors shadow-sm no-underline"
                         >
                           {children}
@@ -98,7 +149,36 @@ const ChatPage = () => {
               </div>
             </div>
           ))}
-          {sending && (
+
+          {/* Streaming AI response — progressive rendering */}
+          {streamingContent && (
+            <div className="flex justify-start">
+              <div className="max-w-[85%] bg-teal-600/10 text-teal-900 dark:text-white dark:bg-white/10 rounded-2xl rounded-tl-sm px-4 py-3 text-sm leading-relaxed">
+                <ReactMarkdown
+                  components={{
+                    ul: ({ children }) => <ul className="list-disc pl-5 my-2 space-y-1.5">{children}</ul>,
+                    li: ({ children }) => <li>{children}</li>,
+                    p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
+                    a: ({ href, children }) => (
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 mt-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white font-medium rounded-xl text-xs transition-colors shadow-sm no-underline"
+                      >
+                        {children}
+                      </a>
+                    ),
+                  }}
+                >
+                  {streamingContent}
+                </ReactMarkdown>
+              </div>
+            </div>
+          )}
+
+          {/* Typing indicator — shown while waiting for first chunk */}
+          {sending && !streamingContent && (
             <div className="flex justify-start">
               <div className="bg-teal-600/10 rounded-2xl rounded-tl-sm px-4 py-2.5">
                 <span className="loading loading-dots loading-sm text-teal-600" />
@@ -115,9 +195,15 @@ const ChatPage = () => {
             placeholder="Type how you're feeling..."
             className="focus-ring flex-1 rounded-xl border border-teal-600/20 bg-white dark:bg-teal-900 px-4 py-2.5 text-sm text-teal-900 dark:text-white"
           />
-          <button type="submit" disabled={sending || !input.trim()} className="btn bg-teal-600 hover:bg-teal-700 text-white border-none rounded-xl px-4">
-            <Send className="w-4 h-4" />
-          </button>
+          {sending ? (
+            <button type="button" onClick={handleStop} className="btn bg-clay-500 hover:bg-clay-600 text-white border-none rounded-xl px-4">
+              <Square className="w-4 h-4" />
+            </button>
+          ) : (
+            <button type="submit" disabled={!input.trim()} className="btn bg-teal-600 hover:bg-teal-700 text-white border-none rounded-xl px-4">
+              <Send className="w-4 h-4" />
+            </button>
+          )}
         </form>
       </Card>
     </div>

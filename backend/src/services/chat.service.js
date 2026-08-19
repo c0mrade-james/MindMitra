@@ -11,10 +11,21 @@ CORE OPERATIONAL RULES:
    - NEVER provide clinical diagnoses or prescribe medication.
    - Encourage professional help whenever a student expresses distress.
 
-2. RESPONSE FORMAT & VISUAL STRUCTURE:
-   - Always deliver responses in structured, easy-to-scan bullet points.
-   - Use bold lead-ins for each bullet point to improve readability.
-   - Keep responses concise (3-4 points maximum) unless the student asks for more detail.
+2. RESPONSE FORMAT & VISUAL STRUCTURE (CRITICAL FOR STREAMING):
+   - Each point must be on its own separate line.
+   - Put a blank line between each point.
+   - Use bold lead-ins at the start of each point for readability.
+   - Keep responses concise: 3-4 short points maximum unless the student asks for more.
+   - Avoid large paragraphs. Each idea should be one or two sentences max.
+   - Example format:
+
+**I hear you, and what you're feeling is valid.**
+
+**You don't have to carry this alone.** There are people who want to support you through this.
+
+**Taking a small step can help.** Try a slow breath, a short walk, or writing down what's on your mind.
+
+**[Click Here to Book Appointment](https://mindmitra-lake.vercel.app/dashboard/student/appointments)**
 
 3. COUNSELOR BOOKING TRIGGER (SERIOUS KEYWORDS):
    - Trigger Keywords/Topics: Persistent hopelessness, severe anxiety, academic burnout, emotional breakdown, trauma, grief, or inability to cope.
@@ -30,7 +41,14 @@ CORE OPERATIONAL RULES:
      • Inform them: "Our platform's emergency support protocol has been notified."
      • End with the appointment booking link:
 
-       **[Click Here to Book Appointment](https://mindmitra-lake.vercel.app/dashboard/student/appointments)**`;
+       **[Click Here to Book Appointment](https://mindmitra-lake.vercel.app/dashboard/student/appointments)**
+
+5. PROACTIVE COUNSELOR RECOMMENDATION:
+   - After 3-4 conversation turns, if the student continues expressing distress, anxiety, overwhelm, sadness, or struggles (even without explicit emergency keywords), gently suggest they consider talking to a professional counselor.
+   - Keep it warm and non-pushy. Example: "Based on what you've shared, I think talking to a professional counselor could really help. They're trained to support exactly what you're going through."
+   - Include the appointment booking link after the suggestion.
+   - Do NOT recommend booking in the very first message. Build rapport first.
+   - Do NOT force the recommendation if the student seems to be doing better.`;
 
 let genAI = null;
 let model = null;
@@ -99,4 +117,51 @@ const getChatReply = async (message, history = []) => {
 
 
 
-module.exports = { getChatReply };
+/**
+ * Streams a reply from Gemini using sendMessageStream().
+ * Yields { chunk } objects as they arrive, then returns the full accumulated reply.
+ * On failure, yields the fallback reply as a single chunk.
+ */
+const getChatReplyStream = async function* (message, history = []) {
+  const emergency = detectEmergency(message);
+  const chatModel = getModel();
+
+  if (!chatModel) {
+    const fallback = fallbackReply(message);
+    yield { chunk: fallback, done: true, emergency };
+    return;
+  }
+
+  try {
+    const chat = chatModel.startChat({
+      history: history.map((m) => ({
+        role: m.role === 'ai' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+      })),
+      generationConfig: {
+        maxOutputTokens: 1024,
+        temperature: 0.7,
+        thinkingConfig: { thinkingBudget: 0 },
+      },
+    });
+
+    const streamResult = await chat.sendMessageStream(message);
+    let fullReply = '';
+
+    for await (const chunk of streamResult.stream) {
+      const text = chunk.text();
+      if (text) {
+        fullReply += text;
+        yield { chunk: text, done: false, emergency };
+      }
+    }
+
+    yield { chunk: '', done: true, emergency, fullReply };
+  } catch (err) {
+    logger.error('Gemini streaming failed, using fallback', err.message);
+    const fallback = fallbackReply(message);
+    yield { chunk: fallback, done: true, emergency };
+  }
+};
+
+module.exports = { getChatReply, getChatReplyStream };
