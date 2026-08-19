@@ -5,6 +5,8 @@ import ReactMarkdown from 'react-markdown';
 import { chatApi } from '../../services/chat.api';
 import Card from '../../components/shared/Card';
 
+const CHUNK_DELAY_MS = 40;
+
 const ChatPage = () => {
   const [messages, setMessages] = useState([
     { role: 'ai', content: "Hi, I'm here to listen. What's on your mind today?" },
@@ -17,6 +19,24 @@ const ChatPage = () => {
   const scrollRef = useRef(null);
   const abortRef = useRef(null);
 
+  // Chunk rendering queue
+  const chunkQueueRef = useRef([]);
+  const renderedContentRef = useRef('');
+  const renderIntervalRef = useRef(null);
+
+  const flushChunks = useCallback(() => {
+    if (renderIntervalRef.current) {
+      clearInterval(renderIntervalRef.current);
+      renderIntervalRef.current = null;
+    }
+    if (chunkQueueRef.current.length > 0) {
+      const batch = chunkQueueRef.current.join('');
+      chunkQueueRef.current = [];
+      renderedContentRef.current += batch;
+      setStreamingContent(renderedContentRef.current);
+    }
+  }, []);
+
   const scrollToBottom = useCallback(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, []);
@@ -25,10 +45,11 @@ const ChatPage = () => {
     scrollToBottom();
   }, [messages, streamingContent, scrollToBottom]);
 
-  // Cleanup: abort stream on unmount
+  // Cleanup: abort stream and clear interval on unmount
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
+      if (renderIntervalRef.current) clearInterval(renderIntervalRef.current);
     };
   }, []);
 
@@ -41,6 +62,12 @@ const ChatPage = () => {
     setInput('');
     setSending(true);
     setStreamingContent('');
+    chunkQueueRef.current = [];
+    renderedContentRef.current = '';
+    if (renderIntervalRef.current) {
+      clearInterval(renderIntervalRef.current);
+      renderIntervalRef.current = null;
+    }
 
     const controller = chatApi.streamMessage(text, sessionId, {
       onStart: (event) => {
@@ -48,26 +75,37 @@ const ChatPage = () => {
         if (event.emergency) setEmergencyBanner(true);
       },
       onChunk: (event) => {
-        setStreamingContent((prev) => prev + event.content);
+        chunkQueueRef.current.push(event.content);
+        if (!renderIntervalRef.current) {
+          renderIntervalRef.current = setInterval(() => {
+            if (chunkQueueRef.current.length > 0) {
+              const chunk = chunkQueueRef.current.shift();
+              renderedContentRef.current += chunk;
+              setStreamingContent(renderedContentRef.current);
+            }
+          }, CHUNK_DELAY_MS);
+        }
       },
       onDone: () => {
-        // Move streamed content into messages as a complete AI message
+        flushChunks();
         setStreamingContent((current) => {
           if (current) {
             setMessages((m) => [...m, { role: 'ai', content: current }]);
           }
           return '';
         });
+        renderedContentRef.current = '';
         setSending(false);
       },
       onError: (message) => {
-        // Keep partial content if any was received
+        flushChunks();
         setStreamingContent((current) => {
           if (current) {
             setMessages((m) => [...m, { role: 'ai', content: current }]);
           }
           return '';
         });
+        renderedContentRef.current = '';
         setSending(false);
         toast.error(message || 'Failed to get response');
       },
@@ -79,13 +117,14 @@ const ChatPage = () => {
   const handleStop = () => {
     abortRef.current?.abort();
     abortRef.current = null;
-    // Preserve any partial content already received
+    flushChunks();
     setStreamingContent((current) => {
       if (current) {
         setMessages((m) => [...m, { role: 'ai', content: current }]);
       }
       return '';
     });
+    renderedContentRef.current = '';
     setSending(false);
   };
 
