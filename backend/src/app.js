@@ -23,7 +23,13 @@ app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
-app.use(compression());
+app.use(compression({
+  filter: (req, res) => {
+    // Don't compress SSE streams — they must be sent immediately
+    if (req.path.includes('/chat/stream')) return false;
+    return compression.filter(req, res);
+  },
+}));
 app.use(mongoSanitize());
 app.use(xssClean());
 app.use(morgan(env.nodeEnv === 'development' ? 'dev' : 'combined'));

@@ -56,6 +56,7 @@ const streamMessage = async (req, res) => {
 
     // Send initial event with metadata
     res.write(`data: ${JSON.stringify({ type: 'start', sessionId: activeSessionId, emergency })}\n\n`);
+    if (typeof res.flush === 'function') res.flush();
 
     if (emergency) {
       await EmergencyAlert.create({
@@ -74,6 +75,7 @@ const streamMessage = async (req, res) => {
       }
       fullReply += event.chunk;
       res.write(`data: ${JSON.stringify({ type: 'chunk', content: event.chunk })}\n\n`);
+      if (typeof res.flush === 'function') res.flush();
     }
 
     // Save the complete message to DB
@@ -84,6 +86,7 @@ const streamMessage = async (req, res) => {
 
     // Send completion event
     res.write(`data: ${JSON.stringify({ type: 'done', emergency })}\n\n`);
+    if (typeof res.flush === 'function') res.flush();
     res.end();
   } catch (err) {
     logger.error('Stream controller error', err.message);
