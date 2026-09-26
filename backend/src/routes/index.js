@@ -19,5 +19,6 @@ router.use('/admin/analytics', require('./analytics.routes'));
 router.use('/counselor-notes', require('./counselorNote.routes'));
 router.use('/volunteer-activities', require('./volunteerActivity.routes'));
 router.use('/ice-servers', require('./ice.routes'));
+router.use('/recommendations', require('./recommendation.routes'));
 
 module.exports = router;

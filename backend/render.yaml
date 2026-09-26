@@ -54,8 +54,13 @@ services:
         sync: false
 
       - key: ICE_SERVERS
-<<<<<<< HEAD
         sync: false
-=======
+
+      - key: XIRSYS_USERNAME
         sync: false
->>>>>>> e2d09fe0a7927bdc3f376efde05afdcefc8988ba
+
+      - key: XIRSYS_API_KEY
+        sync: false
+
+      - key: XIRSYS_CHANNEL
+        sync: false

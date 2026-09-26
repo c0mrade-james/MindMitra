@@ -34,3 +34,7 @@ backend/src/uploads/
 
 # Coverage
 coverage/
+
+# Patches
+/*.patch
+!patches/*.patch
